@@ -31,3 +31,6 @@ diff-by-key:
 
 report:
 	docker compose run --rm app dii report data/delta/customers --from-version 2 --to-version 4 --key customer_id --output docs/example-incident-report.md
+
+compare-counts:
+	docker compose run --rm app dii compare-row-counts data/delta/customers --from-version 2 --to-version 3
