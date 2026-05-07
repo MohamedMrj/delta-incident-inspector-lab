@@ -1,0 +1,26 @@
+[project]
+name = "delta-incident-inspector"
+version = "0.1.0"
+description = "A Dockerized CLI lab for investigating Delta Lake incidents."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.7",
+    "deltalake>=0.20",
+    "pyarrow>=15",
+    "pandas>=2.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+dii = "delta_incident_inspector.cli:app"
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests", "scripts"]
