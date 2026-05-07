@@ -75,22 +75,65 @@ def history(table_path: Path) -> None:
     console.print(table)
 
 
-@app.command("row-count")
-def row_count(table_path: Path, version: Optional[int] = None) -> None:
-    """Show row count for a Delta table version."""
+@app.command("compare-row-counts")
+def compare_row_counts(
+    table_path: Path,
+    from_version: int = typer.Option(..., "--from-version"),
+    to_version: int = typer.Option(..., "--to-version"),
+    warning_threshold_percent: float = typer.Option(
+        50.0,
+        "--warning-threshold-percent",
+        help="Warn when row count drops by this percentage or more.",
+    ),
+) -> None:
+    """Compare row counts between two Delta table versions."""
     if not table_path.exists():
         raise typer.BadParameter(f"Table path does not exist: {table_path}")
 
-    delta_table = DeltaTable(str(table_path), version=version)
-    arrow_table = delta_table.to_pyarrow_table()
+    from_table = DeltaTable(str(table_path), version=from_version)
+    to_table = DeltaTable(str(table_path), version=to_version)
 
-    actual_version = delta_table.version()
+    from_rows = from_table.to_pyarrow_table().num_rows
+    to_rows = to_table.to_pyarrow_table().num_rows
 
-    console.print(
-        f"[bold]Table:[/bold] {table_path}\n"
-        f"[bold]Version:[/bold] {actual_version}\n"
-        f"[bold]Rows:[/bold] {arrow_table.num_rows}"
-    )
+    difference = to_rows - from_rows
+
+    if from_rows == 0:
+        percent_change_text = "n/a"
+        percent_change_value = None
+    else:
+        percent_change_value = (difference / from_rows) * 100
+        percent_change_text = f"{percent_change_value:.2f}%"
+
+    table = Table(title=f"Row count comparison: v{from_version} → v{to_version}")
+    table.add_column("Metric")
+    table.add_column("Value")
+
+    table.add_row("Table", str(table_path))
+    table.add_row("From version", str(from_version))
+    table.add_row("From row count", str(from_rows))
+    table.add_row("To version", str(to_version))
+    table.add_row("To row count", str(to_rows))
+    table.add_row("Difference", str(difference))
+    table.add_row("Percent change", percent_change_text)
+
+    console.print(table)
+
+    if percent_change_value is not None and percent_change_value <= -warning_threshold_percent:
+        console.print(
+            f"[bold red]Warning:[/bold red] suspicious row count drop detected "
+            f"({percent_change_text})."
+        )
+    elif difference < 0:
+        console.print(
+            f"[yellow]Notice:[/yellow] row count decreased by {abs(difference)} rows."
+        )
+    elif difference > 0:
+        console.print(
+            f"[green]Notice:[/green] row count increased by {difference} rows."
+        )
+    else:
+        console.print("[green]No row count change detected.[/green]")
 
 
 @app.command("schema")
