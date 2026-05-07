@@ -25,3 +25,6 @@ format:
 clean:
 	docker compose down -v
 	rm -rf data/delta data/tmp .pytest_cache .ruff_cache
+
+diff-by-key:
+	docker compose run --rm app dii diff-by-key data/delta/customers --from-version 2 --to-version 4 --key customer_id

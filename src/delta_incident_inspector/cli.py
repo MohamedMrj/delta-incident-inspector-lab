@@ -177,3 +177,151 @@ def compare_schema(
         table.add_row("No change", "-", "-")
 
     console.print(table)
+
+
+@app.command("diff-by-key")
+def diff_by_key(
+    table_path: Path,
+    from_version: int = typer.Option(..., "--from-version"),
+    to_version: int = typer.Option(..., "--to-version"),
+    key: str = typer.Option(..., "--key"),
+    max_examples: int = typer.Option(
+        20,
+        "--max-examples",
+        help="Maximum number of example keys to display per category.",
+    ),
+) -> None:
+    """Compare two Delta table versions by business key."""
+    if not table_path.exists():
+        raise typer.BadParameter(f"Table path does not exist: {table_path}")
+
+    from_table = DeltaTable(str(table_path), version=from_version)
+    to_table = DeltaTable(str(table_path), version=to_version)
+
+    from_df = from_table.to_pyarrow_table().to_pandas()
+    to_df = to_table.to_pyarrow_table().to_pandas()
+
+    if key not in from_df.columns:
+        raise typer.BadParameter(f"Key column '{key}' does not exist in version {from_version}")
+
+    if key not in to_df.columns:
+        raise typer.BadParameter(f"Key column '{key}' does not exist in version {to_version}")
+
+    from_null_key_rows = int(from_df[key].isna().sum())
+    to_null_key_rows = int(to_df[key].isna().sum())
+
+    from_non_null = from_df[from_df[key].notna()].copy()
+    to_non_null = to_df[to_df[key].notna()].copy()
+
+    from_key_counts = from_non_null[key].value_counts()
+    to_key_counts = to_non_null[key].value_counts()
+
+    from_keys = set(from_key_counts.index.tolist())
+    to_keys = set(to_key_counts.index.tolist())
+
+    from_duplicate_keys = set(from_key_counts[from_key_counts > 1].index.tolist())
+    to_duplicate_keys = set(to_key_counts[to_key_counts > 1].index.tolist())
+
+    inserted_keys = sorted(to_keys - from_keys, key=str)
+    deleted_keys = sorted(from_keys - to_keys, key=str)
+
+    duplicate_conflict_keys = sorted(from_duplicate_keys | to_duplicate_keys, key=str)
+
+    common_keys = from_keys & to_keys
+    comparable_keys = sorted(
+        common_keys - from_duplicate_keys - to_duplicate_keys,
+        key=str,
+    )
+
+    value_columns = sorted((set(from_df.columns) | set(to_df.columns)) - {key})
+
+    def align_values(df, columns):
+        aligned = df.copy()
+
+        for column in columns:
+            if column not in aligned.columns:
+                aligned[column] = None
+
+        return aligned[columns].astype("string").fillna("<NULL>")
+
+    from_unique = (
+        from_non_null[from_non_null[key].isin(comparable_keys)]
+        .drop_duplicates(subset=[key])
+        .set_index(key)
+    )
+
+    to_unique = (
+        to_non_null[to_non_null[key].isin(comparable_keys)]
+        .drop_duplicates(subset=[key])
+        .set_index(key)
+    )
+
+    from_values = align_values(from_unique, value_columns).reindex(comparable_keys)
+    to_values = align_values(to_unique, value_columns).reindex(comparable_keys)
+
+    changed_keys = []
+    unchanged_keys = []
+
+    for key_value in comparable_keys:
+        if from_values.loc[key_value].equals(to_values.loc[key_value]):
+            unchanged_keys.append(key_value)
+        else:
+            changed_keys.append(key_value)
+
+    summary = Table(title=f"Key diff: v{from_version} → v{to_version} by '{key}'")
+    summary.add_column("Metric")
+    summary.add_column("Value")
+
+    summary.add_row("Table", str(table_path))
+    summary.add_row("From version", str(from_version))
+    summary.add_row("From rows", str(len(from_df)))
+    summary.add_row("From distinct non-null keys", str(len(from_keys)))
+    summary.add_row("From null key rows", str(from_null_key_rows))
+    summary.add_row("To version", str(to_version))
+    summary.add_row("To rows", str(len(to_df)))
+    summary.add_row("To distinct non-null keys", str(len(to_keys)))
+    summary.add_row("To null key rows", str(to_null_key_rows))
+    summary.add_row("Inserted keys", str(len(inserted_keys)))
+    summary.add_row("Deleted keys", str(len(deleted_keys)))
+    summary.add_row("Changed comparable keys", str(len(changed_keys)))
+    summary.add_row("Unchanged comparable keys", str(len(unchanged_keys)))
+    summary.add_row("Duplicate key conflicts", str(len(duplicate_conflict_keys)))
+
+    console.print(summary)
+
+    def format_examples(values) -> str:
+        if not values:
+            return "-"
+
+        shown = values[:max_examples]
+        suffix = "" if len(values) <= max_examples else f" ... +{len(values) - max_examples} more"
+        return ", ".join(str(value) for value in shown) + suffix
+
+    examples = Table(title="Example keys")
+    examples.add_column("Category")
+    examples.add_column("Examples")
+
+    examples.add_row("Inserted", format_examples(inserted_keys))
+    examples.add_row("Deleted", format_examples(deleted_keys))
+    examples.add_row("Changed", format_examples(changed_keys))
+    examples.add_row("Duplicate conflicts", format_examples(duplicate_conflict_keys))
+
+    console.print(examples)
+
+    if duplicate_conflict_keys:
+        console.print(
+            "[bold red]Warning:[/bold red] duplicate keys detected. "
+            "Changed/unchanged comparison excludes duplicated keys because one-to-one comparison is unsafe."
+        )
+
+    if deleted_keys:
+        console.print(
+            "[yellow]Notice:[/yellow] keys disappeared between versions. "
+            "This may indicate filtering, overwrite, deletion, or data loss."
+        )
+
+    if inserted_keys:
+        console.print("[green]Notice:[/green] new keys appeared in the target version.")
+
+    if changed_keys:
+        console.print("[yellow]Notice:[/yellow] existing keys changed values between versions.")
