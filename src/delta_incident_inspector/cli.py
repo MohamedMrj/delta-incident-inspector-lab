@@ -12,6 +12,9 @@ from deltalake import DeltaTable
 from rich.console import Console
 from rich.table import Table
 
+from delta_incident_inspector.row_counts import compare_row_counts as compare_table_row_counts
+from delta_incident_inspector.schema_compare import compare_schemas
+
 app = typer.Typer(
     help="Delta Incident Inspector: investigate Delta table history, schemas, and row counts."
 )
@@ -75,6 +78,24 @@ def history(table_path: Path) -> None:
     console.print(table)
 
 
+@app.command("row-count")
+def row_count(table_path: Path, version: Optional[int] = None) -> None:
+    """Show row count for a Delta table version."""
+    if not table_path.exists():
+        raise typer.BadParameter(f"Table path does not exist: {table_path}")
+
+    delta_table = DeltaTable(str(table_path), version=version)
+    arrow_table = delta_table.to_pyarrow_table()
+
+    actual_version = delta_table.version()
+
+    console.print(
+        f"[bold]Table:[/bold] {table_path}\n"
+        f"[bold]Version:[/bold] {actual_version}\n"
+        f"[bold]Rows:[/bold] {arrow_table.num_rows}"
+    )
+
+
 @app.command("compare-row-counts")
 def compare_row_counts(
     table_path: Path,
@@ -90,47 +111,38 @@ def compare_row_counts(
     if not table_path.exists():
         raise typer.BadParameter(f"Table path does not exist: {table_path}")
 
-    from_table = DeltaTable(str(table_path), version=from_version)
-    to_table = DeltaTable(str(table_path), version=to_version)
-
-    from_rows = from_table.to_pyarrow_table().num_rows
-    to_rows = to_table.to_pyarrow_table().num_rows
-
-    difference = to_rows - from_rows
-
-    if from_rows == 0:
-        percent_change_text = "n/a"
-        percent_change_value = None
-    else:
-        percent_change_value = (difference / from_rows) * 100
-        percent_change_text = f"{percent_change_value:.2f}%"
+    comparison = compare_table_row_counts(
+        table_path=table_path,
+        from_version=from_version,
+        to_version=to_version,
+    )
 
     table = Table(title=f"Row count comparison: v{from_version} → v{to_version}")
     table.add_column("Metric")
     table.add_column("Value")
 
-    table.add_row("Table", str(table_path))
-    table.add_row("From version", str(from_version))
-    table.add_row("From row count", str(from_rows))
-    table.add_row("To version", str(to_version))
-    table.add_row("To row count", str(to_rows))
-    table.add_row("Difference", str(difference))
-    table.add_row("Percent change", percent_change_text)
+    table.add_row("Table", str(comparison.table_path))
+    table.add_row("From version", str(comparison.from_version))
+    table.add_row("From row count", str(comparison.from_rows))
+    table.add_row("To version", str(comparison.to_version))
+    table.add_row("To row count", str(comparison.to_rows))
+    table.add_row("Difference", str(comparison.difference))
+    table.add_row("Percent change", comparison.percent_change_text)
 
     console.print(table)
 
-    if percent_change_value is not None and percent_change_value <= -warning_threshold_percent:
+    if comparison.is_suspicious_drop(warning_threshold_percent):
         console.print(
             f"[bold red]Warning:[/bold red] suspicious row count drop detected "
-            f"({percent_change_text})."
+            f"({comparison.percent_change_text})."
         )
-    elif difference < 0:
+    elif comparison.difference < 0:
         console.print(
-            f"[yellow]Notice:[/yellow] row count decreased by {abs(difference)} rows."
+            f"[yellow]Notice:[/yellow] row count decreased by {abs(comparison.difference)} rows."
         )
-    elif difference > 0:
+    elif comparison.difference > 0:
         console.print(
-            f"[green]Notice:[/green] row count increased by {difference} rows."
+            f"[green]Notice:[/green] row count increased by {comparison.difference} rows."
         )
     else:
         console.print("[green]No row count change detected.[/green]")
@@ -143,7 +155,12 @@ def schema(table_path: Path, version: Optional[int] = None) -> None:
         raise typer.BadParameter(f"Table path does not exist: {table_path}")
 
     delta_table = DeltaTable(str(table_path), version=version)
-    schema_json = delta_table.schema().json()
+    schema_raw = delta_table.schema().json()
+
+    if isinstance(schema_raw, str):
+        schema_json = json.loads(schema_raw)
+    else:
+        schema_json = schema_raw
 
     table = Table(title=f"Schema: {table_path} | version {delta_table.version()}")
     table.add_column("Column")
@@ -173,52 +190,27 @@ def compare_schema(
     from_table = DeltaTable(str(table_path), version=from_version)
     to_table = DeltaTable(str(table_path), version=to_version)
 
-    from_schema = from_table.schema().json()
-    to_schema = to_table.schema().json()
-
-    from_fields = {
-        field["name"]: {
-            "type": json.dumps(field["type"]),
-            "nullable": field["nullable"],
-        }
-        for field in from_schema["fields"]
-    }
-
-    to_fields = {
-        field["name"]: {
-            "type": json.dumps(field["type"]),
-            "nullable": field["nullable"],
-        }
-        for field in to_schema["fields"]
-    }
-
-    added = sorted(set(to_fields) - set(from_fields))
-    removed = sorted(set(from_fields) - set(to_fields))
-
-    changed = []
-    for column in sorted(set(from_fields) & set(to_fields)):
-        if from_fields[column] != to_fields[column]:
-            changed.append(column)
+    comparison = compare_schemas(from_table=from_table, to_table=to_table)
 
     table = Table(title=f"Schema comparison: v{from_version} → v{to_version}")
     table.add_column("Change Type")
     table.add_column("Column")
     table.add_column("Details")
 
-    for column in added:
-        table.add_row("Added", column, str(to_fields[column]))
+    for column in comparison.added:
+        table.add_row("Added", column, str(comparison.to_fields[column]))
 
-    for column in removed:
-        table.add_row("Removed", column, str(from_fields[column]))
+    for column in comparison.removed:
+        table.add_row("Removed", column, str(comparison.from_fields[column]))
 
-    for column in changed:
+    for column in comparison.changed:
         table.add_row(
             "Changed",
             column,
-            f"{from_fields[column]} -> {to_fields[column]}",
+            f"{comparison.from_fields[column]} -> {comparison.to_fields[column]}",
         )
 
-    if not added and not removed and not changed:
+    if not comparison.has_changes:
         table.add_row("No change", "-", "-")
 
     console.print(table)
@@ -252,66 +244,12 @@ def diff_by_key(
     if key not in to_df.columns:
         raise typer.BadParameter(f"Key column '{key}' does not exist in version {to_version}")
 
-    from_null_key_rows = int(from_df[key].isna().sum())
-    to_null_key_rows = int(to_df[key].isna().sum())
-
-    from_non_null = from_df[from_df[key].notna()].copy()
-    to_non_null = to_df[to_df[key].notna()].copy()
-
-    from_key_counts = from_non_null[key].value_counts()
-    to_key_counts = to_non_null[key].value_counts()
-
-    from_keys = set(from_key_counts.index.tolist())
-    to_keys = set(to_key_counts.index.tolist())
-
-    from_duplicate_keys = set(from_key_counts[from_key_counts > 1].index.tolist())
-    to_duplicate_keys = set(to_key_counts[to_key_counts > 1].index.tolist())
-
-    inserted_keys = sorted(to_keys - from_keys, key=str)
-    deleted_keys = sorted(from_keys - to_keys, key=str)
-
-    duplicate_conflict_keys = sorted(from_duplicate_keys | to_duplicate_keys, key=str)
-
-    common_keys = from_keys & to_keys
-    comparable_keys = sorted(
-        common_keys - from_duplicate_keys - to_duplicate_keys,
-        key=str,
+    key_summary = _diff_by_key_for_report(
+        from_df=from_df,
+        to_df=to_df,
+        key=key,
+        max_examples=max_examples,
     )
-
-    value_columns = sorted((set(from_df.columns) | set(to_df.columns)) - {key})
-
-    def align_values(df, columns):
-        aligned = df.copy()
-
-        for column in columns:
-            if column not in aligned.columns:
-                aligned[column] = None
-
-        return aligned[columns].astype("string").fillna("<NULL>")
-
-    from_unique = (
-        from_non_null[from_non_null[key].isin(comparable_keys)]
-        .drop_duplicates(subset=[key])
-        .set_index(key)
-    )
-
-    to_unique = (
-        to_non_null[to_non_null[key].isin(comparable_keys)]
-        .drop_duplicates(subset=[key])
-        .set_index(key)
-    )
-
-    from_values = align_values(from_unique, value_columns).reindex(comparable_keys)
-    to_values = align_values(to_unique, value_columns).reindex(comparable_keys)
-
-    changed_keys = []
-    unchanged_keys = []
-
-    for key_value in comparable_keys:
-        if from_values.loc[key_value].equals(to_values.loc[key_value]):
-            unchanged_keys.append(key_value)
-        else:
-            changed_keys.append(key_value)
 
     summary = Table(title=f"Key diff: v{from_version} → v{to_version} by '{key}'")
     summary.add_column("Metric")
@@ -320,55 +258,47 @@ def diff_by_key(
     summary.add_row("Table", str(table_path))
     summary.add_row("From version", str(from_version))
     summary.add_row("From rows", str(len(from_df)))
-    summary.add_row("From distinct non-null keys", str(len(from_keys)))
-    summary.add_row("From null key rows", str(from_null_key_rows))
+    summary.add_row("From distinct non-null keys", str(key_summary["from_distinct_keys"]))
+    summary.add_row("From null key rows", str(key_summary["from_null_key_rows"]))
     summary.add_row("To version", str(to_version))
     summary.add_row("To rows", str(len(to_df)))
-    summary.add_row("To distinct non-null keys", str(len(to_keys)))
-    summary.add_row("To null key rows", str(to_null_key_rows))
-    summary.add_row("Inserted keys", str(len(inserted_keys)))
-    summary.add_row("Deleted keys", str(len(deleted_keys)))
-    summary.add_row("Changed comparable keys", str(len(changed_keys)))
-    summary.add_row("Unchanged comparable keys", str(len(unchanged_keys)))
-    summary.add_row("Duplicate key conflicts", str(len(duplicate_conflict_keys)))
+    summary.add_row("To distinct non-null keys", str(key_summary["to_distinct_keys"]))
+    summary.add_row("To null key rows", str(key_summary["to_null_key_rows"]))
+    summary.add_row("Inserted keys", str(len(key_summary["inserted"])))
+    summary.add_row("Deleted keys", str(len(key_summary["deleted"])))
+    summary.add_row("Changed comparable keys", str(len(key_summary["changed"])))
+    summary.add_row("Unchanged comparable keys", str(len(key_summary["unchanged"])))
+    summary.add_row("Duplicate key conflicts", str(len(key_summary["duplicate_conflicts"])))
 
     console.print(summary)
-
-    def format_examples(values) -> str:
-        if not values:
-            return "-"
-
-        shown = values[:max_examples]
-        suffix = "" if len(values) <= max_examples else f" ... +{len(values) - max_examples} more"
-        return ", ".join(str(value) for value in shown) + suffix
 
     examples = Table(title="Example keys")
     examples.add_column("Category")
     examples.add_column("Examples")
 
-    examples.add_row("Inserted", format_examples(inserted_keys))
-    examples.add_row("Deleted", format_examples(deleted_keys))
-    examples.add_row("Changed", format_examples(changed_keys))
-    examples.add_row("Duplicate conflicts", format_examples(duplicate_conflict_keys))
+    examples.add_row("Inserted", _format_list(key_summary["inserted_examples"]))
+    examples.add_row("Deleted", _format_list(key_summary["deleted_examples"]))
+    examples.add_row("Changed", _format_list(key_summary["changed_examples"]))
+    examples.add_row("Duplicate conflicts", _format_list(key_summary["duplicate_examples"]))
 
     console.print(examples)
 
-    if duplicate_conflict_keys:
+    if key_summary["duplicate_conflicts"]:
         console.print(
             "[bold red]Warning:[/bold red] duplicate keys detected. "
             "Changed/unchanged comparison excludes duplicated keys because one-to-one comparison is unsafe."
         )
 
-    if deleted_keys:
+    if key_summary["deleted"]:
         console.print(
             "[yellow]Notice:[/yellow] keys disappeared between versions. "
             "This may indicate filtering, overwrite, deletion, or data loss."
         )
 
-    if inserted_keys:
+    if key_summary["inserted"]:
         console.print("[green]Notice:[/green] new keys appeared in the target version.")
 
-    if changed_keys:
+    if key_summary["changed"]:
         console.print("[yellow]Notice:[/yellow] existing keys changed values between versions.")
 
 
@@ -392,22 +322,17 @@ def report(
     if not table_path.exists():
         raise typer.BadParameter(f"Table path does not exist: {table_path}")
 
+    row_count_comparison = compare_table_row_counts(
+        table_path=table_path,
+        from_version=from_version,
+        to_version=to_version,
+    )
+
     from_table = DeltaTable(str(table_path), version=from_version)
     to_table = DeltaTable(str(table_path), version=to_version)
 
     from_df = from_table.to_pyarrow_table().to_pandas()
     to_df = to_table.to_pyarrow_table().to_pandas()
-
-    from_rows = len(from_df)
-    to_rows = len(to_df)
-    row_difference = to_rows - from_rows
-
-    if from_rows == 0:
-        percent_change = None
-        percent_change_text = "n/a"
-    else:
-        percent_change = (row_difference / from_rows) * 100
-        percent_change_text = f"{percent_change:.2f}%"
 
     schema_summary = _compare_schemas_for_report(from_table, to_table)
 
@@ -422,12 +347,14 @@ def report(
 
     findings = []
 
-    if percent_change is not None and percent_change <= -50:
+    if row_count_comparison.is_suspicious_drop(warning_threshold_percent=50.0):
         findings.append(
-            f"Suspicious row count drop detected: {from_rows} → {to_rows} ({percent_change_text})."
+            "Suspicious row count drop detected: "
+            f"{row_count_comparison.from_rows} → {row_count_comparison.to_rows} "
+            f"({row_count_comparison.percent_change_text})."
         )
-    elif row_difference < 0:
-        findings.append(f"Row count decreased by {abs(row_difference)} rows.")
+    elif row_count_comparison.difference < 0:
+        findings.append(f"Row count decreased by {abs(row_count_comparison.difference)} rows.")
 
     if schema_summary["added"]:
         findings.append("Schema columns were added: " + ", ".join(schema_summary["added"]) + ".")
@@ -464,10 +391,10 @@ def report(
         table_path=table_path,
         from_version=from_version,
         to_version=to_version,
-        from_rows=from_rows,
-        to_rows=to_rows,
-        row_difference=row_difference,
-        percent_change_text=percent_change_text,
+        from_rows=row_count_comparison.from_rows,
+        to_rows=row_count_comparison.to_rows,
+        row_difference=row_count_comparison.difference,
+        percent_change_text=row_count_comparison.percent_change_text,
         schema_summary=schema_summary,
         key=key,
         key_summary=key_summary,
@@ -480,39 +407,14 @@ def report(
 
 
 def _compare_schemas_for_report(from_table: DeltaTable, to_table: DeltaTable) -> dict:
-    from_schema = from_table.schema().json()
-    to_schema = to_table.schema().json()
-
-    from_fields = {
-        field["name"]: {
-            "type": json.dumps(field["type"]),
-            "nullable": field["nullable"],
-        }
-        for field in from_schema["fields"]
-    }
-
-    to_fields = {
-        field["name"]: {
-            "type": json.dumps(field["type"]),
-            "nullable": field["nullable"],
-        }
-        for field in to_schema["fields"]
-    }
-
-    added = sorted(set(to_fields) - set(from_fields))
-    removed = sorted(set(from_fields) - set(to_fields))
-
-    changed = []
-    for column in sorted(set(from_fields) & set(to_fields)):
-        if from_fields[column] != to_fields[column]:
-            changed.append(column)
+    comparison = compare_schemas(from_table=from_table, to_table=to_table)
 
     return {
-        "added": added,
-        "removed": removed,
-        "changed": changed,
-        "from_fields": from_fields,
-        "to_fields": to_fields,
+        "added": comparison.added,
+        "removed": comparison.removed,
+        "changed": comparison.changed,
+        "from_fields": comparison.from_fields,
+        "to_fields": comparison.to_fields,
     }
 
 
