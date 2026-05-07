@@ -1,6 +1,6 @@
 # Delta Incident Inspector Lab
 
-A Dockerized data-engineering CLI tool for investigating Delta Lake table incidents.
+A Dockerized data-engineering tool for investigating Delta Lake table incidents through both a **browser UI** and a **CLI**.
 
 This project helps answer practical incident questions:
 
@@ -9,8 +9,9 @@ This project helps answer practical incident questions:
 - Did the row count suddenly drop?
 - Which business keys were inserted, deleted, changed, or duplicated?
 - Can we generate a readable incident report?
+- Can non-terminal users inspect incidents from a browser?
 
-The project is designed as a realistic portfolio project for data engineers who work with Delta Lake, data quality checks, and production debugging.
+The project is designed as a realistic portfolio project for data engineers who work with Delta Lake, data quality checks, incident investigation, and production debugging.
 
 ---
 
@@ -26,9 +27,37 @@ Did the schema change?
 Did important records disappear?
 Did duplicate business keys appear?
 Which version introduced the issue?
+Can I generate a report to share with others?
 ```
 
 Delta Incident Inspector provides a small but practical local lab for exploring those questions in an isolated Docker environment.
+
+It supports two usage styles:
+
+```text
+Browser UI
+  for users who want an easier visual workflow
+
+CLI
+  for engineers, automation, scripting, and reproducible investigations
+```
+
+---
+
+## Features
+
+- Browser-based Streamlit UI
+- CLI for terminal-based investigation
+- Delta table history inspection
+- Row-count comparison between versions
+- Schema comparison between versions
+- Business-key-level diffing
+- Duplicate key conflict detection
+- Markdown incident report generation
+- Reproducible sample incident data
+- Dockerized development and runtime environment
+- Automated linting and tests
+- GitHub Actions CI
 
 ---
 
@@ -37,6 +66,7 @@ Delta Incident Inspector provides a small but practical local lab for exploring 
 - Python 3.11
 - Docker
 - Docker Compose
+- Streamlit
 - Delta Lake via `deltalake`
 - PyArrow
 - Pandas
@@ -56,6 +86,7 @@ delta-incident-inspector-lab/
 │   └── workflows/
 │       └── ci.yml
 ├── docs/
+│   ├── architecture.md
 │   └── example-incident-report.md
 ├── scripts/
 │   └── generate_sample_delta_tables.py
@@ -66,7 +97,8 @@ delta-incident-inspector-lab/
 │       ├── key_diff.py
 │       ├── reports.py
 │       ├── row_counts.py
-│       └── schema_compare.py
+│       ├── schema_compare.py
+│       └── ui.py
 ├── tests/
 │   └── test_cli_smoke.py
 ├── Dockerfile
@@ -80,12 +112,29 @@ delta-incident-inspector-lab/
 
 ## Architecture
 
-The project separates command-line interface code from reusable comparison logic.
+The project separates user interfaces from reusable investigation logic.
 
 ```text
-cli.py
-  CLI commands and terminal output formatting
+Browser user
+  │
+  ▼
+ui.py
+  │
+  ▼
+shared core modules
 
+Terminal user
+  │
+  ▼
+cli.py
+  │
+  ▼
+shared core modules
+```
+
+Core modules:
+
+```text
 row_counts.py
   Row count comparison between Delta versions
 
@@ -99,7 +148,7 @@ reports.py
   Markdown incident report rendering
 ```
 
-This keeps the CLI thin and makes the core logic easier to test and maintain.
+This keeps the CLI and UI thin while keeping the core logic reusable and testable.
 
 ---
 
@@ -118,27 +167,79 @@ cd delta-incident-inspector-lab
 make build
 ```
 
-### 3. Verify the environment
-
-```bash
-make doctor
-```
-
-### 4. Generate sample Delta incident data
+### 3. Generate sample Delta incident data
 
 ```bash
 make seed
 ```
 
-### 5. Inspect Delta history
+### 4. Start the browser UI
 
 ```bash
-make history
+make ui
+```
+
+Then open:
+
+```text
+http://localhost:8501
+```
+
+Use the default values:
+
+```text
+Table path: data/delta/customers
+From version: 2
+To version: 4
+Business key column: customer_id
 ```
 
 ---
 
-## Main commands
+## Browser UI
+
+The browser UI is the easiest way to use the project.
+
+Start it with:
+
+```bash
+make ui
+```
+
+Open:
+
+```text
+http://localhost:8501
+```
+
+The UI includes tabs for:
+
+- History
+- Row counts
+- Schema
+- Key diff
+- Report
+
+From the UI, users can:
+
+- inspect Delta table history
+- compare row counts
+- compare schemas
+- detect inserted/deleted/changed keys
+- detect duplicate key conflicts
+- generate and download a Markdown incident report
+
+Stop the UI with:
+
+```text
+CTRL + C
+```
+
+---
+
+## CLI usage
+
+The CLI is still available for technical users, automation, and reproducible workflows.
 
 ### Environment check
 
@@ -233,7 +334,7 @@ The sample data generator creates a fake Delta table with multiple versions:
 | 3 | Suspicious overwrite with fewer rows |
 | 4 | Duplicate business key introduced |
 
-This lets the CLI demonstrate realistic incident investigation behavior without requiring external data.
+This lets the UI and CLI demonstrate realistic incident investigation behavior without requiring external data.
 
 ---
 
@@ -256,12 +357,55 @@ The report includes:
 
 ---
 
+## Using your own Delta table
+
+The table path must be visible inside the Docker container.
+
+If your Delta table is inside the project directory, you can enter its path directly in the UI or CLI.
+
+If your Delta table is outside the project directory, mount it in `compose.yaml`.
+
+Example:
+
+```yaml
+services:
+  app:
+    volumes:
+      - .:/workspace
+      - /home/user/my-delta-tables:/data/delta-tables
+
+  ui:
+    volumes:
+      - .:/workspace
+      - /home/user/my-delta-tables:/data/delta-tables
+```
+
+Then use this path in the UI or CLI:
+
+```text
+/data/delta-tables/my-table
+```
+
+---
+
 ## Development workflow
 
 ### Build
 
 ```bash
 make build
+```
+
+### Start the browser UI
+
+```bash
+make ui
+```
+
+### Start the browser UI in detached mode
+
+```bash
+make ui-detached
 ```
 
 ### Open shell inside the container
@@ -306,12 +450,13 @@ This is useful for:
 - creating a reproducible development environment
 - making onboarding easier for other users
 - demonstrating production-oriented engineering habits
+- running both the CLI and UI in an isolated environment
 
 ---
 
 ## Testing and CI
 
-The project includes smoke tests for the main CLI workflows:
+The project includes smoke tests for the main workflows:
 
 ```bash
 make test
@@ -339,14 +484,15 @@ This is a local investigation lab, not yet a full production incident platform.
 
 Current limitations:
 
-- Designed for local Delta tables
+- Designed mainly for local Delta tables
 - Key-level diff loads data into memory using Pandas
 - Large table support is not optimized yet
-- No web UI
 - No cloud object storage integration yet
 - No Spark cluster execution yet
+- Browser UI is intentionally simple
+- User-provided table paths must be mounted into Docker
 
-These limitations are intentional at this stage. The current goal is to provide a clean, understandable, reproducible CLI tool.
+These limitations are intentional at this stage. The current goal is to provide a clean, understandable, reproducible Delta incident investigation tool.
 
 ---
 
@@ -363,6 +509,8 @@ Planned improvements:
 - Add Docker image build job in CI
 - Add architecture diagram
 - Add example GIF/demo recording
+- Move duplicated report-finding logic into a shared incident summary module
+- Improve UI styling and add clearer report previews
 
 ---
 
@@ -372,10 +520,12 @@ This project demonstrates:
 
 - Docker-based development
 - Python CLI design
+- Browser-based data tool development with Streamlit
 - Delta Lake version inspection
 - Data quality investigation
 - Schema comparison
 - Business-key diffing
+- Duplicate key conflict handling
 - Report generation
 - Clean modular refactoring
 - Automated testing
