@@ -12,6 +12,7 @@ from deltalake import DeltaTable
 from rich.console import Console
 from rich.table import Table
 
+from delta_incident_inspector.key_diff import diff_by_key_dataframes
 from delta_incident_inspector.row_counts import compare_row_counts as compare_table_row_counts
 from delta_incident_inspector.schema_compare import compare_schemas
 
@@ -238,12 +239,6 @@ def diff_by_key(
     from_df = from_table.to_pyarrow_table().to_pandas()
     to_df = to_table.to_pyarrow_table().to_pandas()
 
-    if key not in from_df.columns:
-        raise typer.BadParameter(f"Key column '{key}' does not exist in version {from_version}")
-
-    if key not in to_df.columns:
-        raise typer.BadParameter(f"Key column '{key}' does not exist in version {to_version}")
-
     key_summary = _diff_by_key_for_report(
         from_df=from_df,
         to_df=to_df,
@@ -419,87 +414,17 @@ def _compare_schemas_for_report(from_table: DeltaTable, to_table: DeltaTable) ->
 
 
 def _diff_by_key_for_report(from_df, to_df, key: str, max_examples: int) -> dict:
-    if key not in from_df.columns:
-        raise typer.BadParameter(f"Key column '{key}' does not exist in from-version data")
+    try:
+        summary = diff_by_key_dataframes(
+            from_df=from_df,
+            to_df=to_df,
+            key=key,
+            max_examples=max_examples,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
 
-    if key not in to_df.columns:
-        raise typer.BadParameter(f"Key column '{key}' does not exist in to-version data")
-
-    from_null_key_rows = int(from_df[key].isna().sum())
-    to_null_key_rows = int(to_df[key].isna().sum())
-
-    from_non_null = from_df[from_df[key].notna()].copy()
-    to_non_null = to_df[to_df[key].notna()].copy()
-
-    from_key_counts = from_non_null[key].value_counts()
-    to_key_counts = to_non_null[key].value_counts()
-
-    from_keys = set(from_key_counts.index.tolist())
-    to_keys = set(to_key_counts.index.tolist())
-
-    from_duplicate_keys = set(from_key_counts[from_key_counts > 1].index.tolist())
-    to_duplicate_keys = set(to_key_counts[to_key_counts > 1].index.tolist())
-
-    inserted = sorted(to_keys - from_keys, key=str)
-    deleted = sorted(from_keys - to_keys, key=str)
-    duplicate_conflicts = sorted(from_duplicate_keys | to_duplicate_keys, key=str)
-
-    common_keys = from_keys & to_keys
-    comparable_keys = sorted(
-        common_keys - from_duplicate_keys - to_duplicate_keys,
-        key=str,
-    )
-
-    value_columns = sorted((set(from_df.columns) | set(to_df.columns)) - {key})
-
-    def align_values(df, columns):
-        aligned = df.copy()
-
-        for column in columns:
-            if column not in aligned.columns:
-                aligned[column] = None
-
-        return aligned[columns].astype("string").fillna("<NULL>")
-
-    from_unique = (
-        from_non_null[from_non_null[key].isin(comparable_keys)]
-        .drop_duplicates(subset=[key])
-        .set_index(key)
-    )
-
-    to_unique = (
-        to_non_null[to_non_null[key].isin(comparable_keys)]
-        .drop_duplicates(subset=[key])
-        .set_index(key)
-    )
-
-    from_values = align_values(from_unique, value_columns).reindex(comparable_keys)
-    to_values = align_values(to_unique, value_columns).reindex(comparable_keys)
-
-    changed = []
-    unchanged = []
-
-    for key_value in comparable_keys:
-        if from_values.loc[key_value].equals(to_values.loc[key_value]):
-            unchanged.append(key_value)
-        else:
-            changed.append(key_value)
-
-    return {
-        "from_null_key_rows": from_null_key_rows,
-        "to_null_key_rows": to_null_key_rows,
-        "from_distinct_keys": len(from_keys),
-        "to_distinct_keys": len(to_keys),
-        "inserted": inserted,
-        "deleted": deleted,
-        "changed": changed,
-        "unchanged": unchanged,
-        "duplicate_conflicts": duplicate_conflicts,
-        "inserted_examples": inserted[:max_examples],
-        "deleted_examples": deleted[:max_examples],
-        "changed_examples": changed[:max_examples],
-        "duplicate_examples": duplicate_conflicts[:max_examples],
-    }
+    return summary.to_dict()
 
 
 def _format_list(values: list) -> str:
