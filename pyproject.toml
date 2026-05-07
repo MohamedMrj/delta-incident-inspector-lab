@@ -24,3 +24,9 @@ dii = "delta_incident_inspector.cli:app"
 [tool.ruff]
 line-length = 100
 src = ["src", "tests", "scripts"]
+
+[tool.pytest.ini_options]
+pythonpath = [
+    ".",
+    "src",
+]
