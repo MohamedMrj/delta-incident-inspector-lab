@@ -21,7 +21,12 @@ class SchemaComparison:
 
 
 def _schema_to_dict(delta_table: DeltaTable) -> dict[str, Any]:
-    schema_raw = delta_table.schema().json()
+    schema = delta_table.schema()
+
+    if hasattr(schema, "to_json"):
+        return json.loads(schema.to_json())
+
+    schema_raw = schema.json()
 
     if isinstance(schema_raw, str):
         return json.loads(schema_raw)

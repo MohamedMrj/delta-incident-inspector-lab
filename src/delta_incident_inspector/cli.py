@@ -156,12 +156,13 @@ def schema(table_path: Path, version: Optional[int] = None) -> None:
         raise typer.BadParameter(f"Table path does not exist: {table_path}")
 
     delta_table = DeltaTable(str(table_path), version=version)
-    schema_raw = delta_table.schema().json()
+    schema_obj = delta_table.schema()
 
-    if isinstance(schema_raw, str):
-        schema_json = json.loads(schema_raw)
+    if hasattr(schema_obj, "to_json"):
+        schema_json = json.loads(schema_obj.to_json())
     else:
-        schema_json = schema_raw
+        schema_raw = schema_obj.json()
+        schema_json = json.loads(schema_raw) if isinstance(schema_raw, str) else schema_raw
 
     table = Table(title=f"Schema: {table_path} | version {delta_table.version()}")
     table.add_column("Column")
