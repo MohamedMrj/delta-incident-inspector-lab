@@ -30,7 +30,7 @@ diff-by-key:
 	docker compose run --rm app dii diff-by-key data/delta/customers --from-version 2 --to-version 4 --key customer_id
 
 report:
-	docker compose run --rm app dii report data/delta/customers --from-version 2 --to-version 4 --key customer_id --output docs/example-incident-report.md
+	docker compose run --rm app dii report data/delta/customers --from-version 2 --to-version 4 --key customer_id --output docs/example-incident-report.md --generated-at "2026-01-01T00:00:00+00:00"
 
 compare-counts:
 	docker compose run --rm app dii compare-row-counts data/delta/customers --from-version 2 --to-version 3

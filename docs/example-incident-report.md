@@ -2,7 +2,7 @@
 
 ## Summary
 
-- **Generated at:** `2026-05-07T19:35:15.306657+00:00`
+- **Generated at:** `2026-01-01T00:00:00+00:00`
 - **Table path:** `data/delta/customers`
 - **Compared versions:** `2` → `4`
 

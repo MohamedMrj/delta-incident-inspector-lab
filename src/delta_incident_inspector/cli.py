@@ -312,6 +312,11 @@ def report(
         "--output",
         help="Path where the Markdown report should be written.",
     ),
+    generated_at: Optional[str] = typer.Option(
+        None,
+        "--generated-at",
+        help="Optional fixed timestamp for deterministic report generation.",
+    ),
 ) -> None:
     """Generate a Markdown incident report comparing two Delta table versions."""
     if not table_path.exists():
@@ -394,6 +399,7 @@ def report(
         key=key,
         key_summary=key_summary,
         findings=findings,
+        generated_at=generated_at,
     )
 
     output.write_text(report_markdown, encoding="utf-8")
@@ -446,8 +452,10 @@ def _build_markdown_report(
     key: Optional[str],
     key_summary: Optional[dict],
     findings: list[str],
+    generated_at: Optional[str] = None,
 ) -> str:
-    generated_at = datetime.now(timezone.utc).isoformat()
+    if generated_at is None:
+        generated_at = datetime.now(timezone.utc).isoformat()
 
     lines = [
         "# Delta Incident Report",
